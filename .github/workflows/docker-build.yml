@@ -196,7 +196,7 @@ jobs:
     
     steps:
     - name: Delete old container images
-      uses: actions/delete-package-versions@v4
+      uses: actions/delete-package-versions@v5
       with:
         package-name: ${{ env.IMAGE_NAME }}/producer
         package-type: container
@@ -204,7 +204,7 @@ jobs:
         delete-only-untagged-versions: true
 
     - name: Delete old spark images
-      uses: actions/delete-package-versions@v4
+      uses: actions/delete-package-versions@v5
       with:
         package-name: ${{ env.IMAGE_NAME }}/spark-job
         package-type: container
