@@ -1,0 +1,286 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Get tag info
+      id: tag_info
+      run: |
+        echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+        echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+    - name: Generate changelog
+      id: changelog
+      run: |
+        # Generate changelog from commits since last tag
+        LAST_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+        
+        if [ -z "$LAST_TAG" ]; then
+          echo "## Changes" > CHANGELOG.md
+          echo "" >> CHANGELOG.md
+          git log --pretty=format:"- %s (%h)" --reverse >> CHANGELOG.md
+        else
+          echo "## Changes since $LAST_TAG" > CHANGELOG.md
+          echo "" >> CHANGELOG.md
+          git log $LAST_TAG..HEAD --pretty=format:"- %s (%h)" --reverse >> CHANGELOG.md
+        fi
+        
+        echo "" >> CHANGELOG.md
+        echo "## Features" >> CHANGELOG.md
+        echo "- 🤖 Autonomous pipeline remediation with LangChain agents" >> CHANGELOG.md
+        echo "- 📊 Real-time data quality monitoring with Great Expectations" >> CHANGELOG.md
+        echo "- ⚡ Spark structured streaming with schema drift detection" >> CHANGELOG.md
+        echo "- 🔄 Airflow orchestration with intelligent decision making" >> CHANGELOG.md
+        echo "- 🔔 Smart alerting via Slack and email" >> CHANGELOG.md
+        echo "- 🐳 Complete Docker deployment stack" >> CHANGELOG.md
+        echo "" >> CHANGELOG.md
+        echo "## Technical Stack" >> CHANGELOG.md
+        echo "- **Orchestration**: Apache Airflow 2.8.0" >> CHANGELOG.md
+        echo "- **Streaming**: Apache Kafka + Spark Structured Streaming" >> CHANGELOG.md
+        echo "- **Data Quality**: Great Expectations" >> CHANGELOG.md
+        echo "- **AI/ML**: LangChain with Ollama/OpenAI integration" >> CHANGELOG.md
+        echo "- **Storage**: Snowflake connector + Parquet fallback" >> CHANGELOG.md
+        echo "- **Infrastructure**: Docker Compose + PostgreSQL" >> CHANGELOG.md
+
+    - name: Create deployment package
+      run: |
+        mkdir -p release-artifacts
+        
+        # Create deployment package
+        tar -czf release-artifacts/autonomous-data-pipeline-${{ steps.tag_info.outputs.version }}.tar.gz \
+          --exclude='.git' \
+          --exclude='release-artifacts' \
+          --exclude='data' \
+          --exclude='__pycache__' \
+          --exclude='*.pyc' \
+          .
+        
+        # Create quick start script
+        cat > release-artifacts/quick-start.sh << 'EOF'
+        #!/bin/bash
+        set -e
+        
+        echo "🚀 Autonomous Data Pipeline Orchestrator Quick Start"
+        echo "=================================================="
+        echo ""
+        
+        # Check prerequisites
+        if ! command -v docker &> /dev/null; then
+            echo "❌ Docker is required but not installed"
+            exit 1
+        fi
+        
+        if ! command -v docker-compose &> /dev/null; then
+            echo "❌ Docker Compose is required but not installed"
+            exit 1
+        fi
+        
+        echo "✅ Prerequisites check passed"
+        echo ""
+        
+        # Setup
+        echo "📋 Setting up environment..."
+        cp .env.example .env
+        echo "AIRFLOW_UID=$(id -u)" >> .env
+        mkdir -p data/{ops,out/parquet,checkpoints,quarantine}
+        
+        echo "🐳 Starting services..."
+        docker-compose up -d
+        
+        echo ""
+        echo "🎉 Setup complete!"
+        echo ""
+        echo "📊 Access URLs:"
+        echo "  Airflow UI: http://localhost:8080 (airflow/airflow)"
+        echo "  Kafka UI: http://localhost:8080"
+        echo "  Spark Master: http://localhost:8082"
+        echo ""
+        echo "⏳ Wait 2-3 minutes for all services to be ready"
+        echo "📖 See README.md for detailed instructions"
+        EOF
+        
+        chmod +x release-artifacts/quick-start.sh
+        
+        # Create checksums
+        cd release-artifacts
+        sha256sum * > checksums.txt
+
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ steps.tag_info.outputs.tag }}
+        name: "Autonomous Data Pipeline v${{ steps.tag_info.outputs.version }}"
+        body_path: CHANGELOG.md
+        draft: false
+        prerelease: false
+        files: |
+          release-artifacts/*
+        generate_release_notes: true
+
+  docker-release:
+    name: Release Docker Images
+    runs-on: ubuntu-latest
+    needs: create-release
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Log in to GitHub Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Log in to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: |
+          ghcr.io/${{ github.repository }}/producer
+          abdulsohail018/autonomous-pipeline-producer
+        tags: |
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=semver,pattern={{major}}
+          type=raw,value=latest
+
+    - name: Build and push Producer image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./Dockerfile.producer
+        platforms: linux/amd64,linux/arm64
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+
+  helm-release:
+    name: Package Helm Chart
+    runs-on: ubuntu-latest
+    needs: create-release
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Create Helm chart
+      run: |
+        mkdir -p helm/autonomous-pipeline
+        
+        cat > helm/autonomous-pipeline/Chart.yaml << EOF
+        apiVersion: v2
+        name: autonomous-pipeline
+        description: A self-healing data pipeline with autonomous remediation
+        type: application
+        version: ${{ github.ref_name }}
+        appVersion: ${{ github.ref_name }}
+        keywords:
+          - data-pipeline
+          - airflow
+          - kafka
+          - spark
+          - autonomous
+        home: https://github.com/${{ github.repository }}
+        sources:
+          - https://github.com/${{ github.repository }}
+        maintainers:
+          - name: Abdul Sohail Ahmed
+            email: abdulsohail018@gmail.com
+        EOF
+        
+        mkdir -p helm/autonomous-pipeline/templates
+        
+        # Create basic Kubernetes manifests (simplified for demo)
+        cat > helm/autonomous-pipeline/values.yaml << 'EOF'
+        # Default values for autonomous-pipeline
+        image:
+          repository: ghcr.io/abdulsohail018/autonomous-orchestrator-ai/producer
+          tag: latest
+          pullPolicy: IfNotPresent
+        
+        resources:
+          limits:
+            cpu: 2000m
+            memory: 4Gi
+          requests:
+            cpu: 500m
+            memory: 1Gi
+        
+        kafka:
+          enabled: true
+          replicaCount: 1
+        
+        spark:
+          enabled: true
+          master:
+            resources:
+              limits:
+                cpu: 1000m
+                memory: 2Gi
+        
+        airflow:
+          enabled: true
+          webserver:
+            service:
+              type: LoadBalancer
+              port: 8080
+        EOF
+
+    - name: Package Helm chart
+      run: |
+        helm package helm/autonomous-pipeline
+        mv autonomous-pipeline-*.tgz release-artifacts/ || echo "No helm chart to move"
+
+  notify-release:
+    name: Notify Release
+    runs-on: ubuntu-latest
+    needs: [create-release, docker-release, helm-release]
+    if: always()
+    
+    steps:
+    - name: Get release info
+      id: release_info
+      run: |
+        echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+        echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+    - name: Notify successful release
+      if: needs.create-release.result == 'success'
+      run: |
+        echo "🎉 Successfully released Autonomous Data Pipeline v${{ steps.release_info.outputs.version }}"
+        echo ""
+        echo "📦 Release includes:"
+        echo "  - Source code archive"
+        echo "  - Docker images (multi-arch)"
+        echo "  - Quick start script"
+        echo "  - Helm chart (if available)"
+        echo ""
+        echo "🔗 Release URL: https://github.com/${{ github.repository }}/releases/tag/${{ steps.release_info.outputs.tag }}"
