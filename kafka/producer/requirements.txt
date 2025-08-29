@@ -1,4 +1,4 @@
-kafka-python==2.0.2
+kafka-python==2.2.15
 avro-python3==1.11.3
 python-dotenv==1.0.0
 click==8.1.7
