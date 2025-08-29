@@ -7,7 +7,7 @@ requests==2.31.0
 python-dotenv==1.0.0
 great-expectations==0.18.8
 pandas==2.0.3
-pyspark==3.4.0
+pyspark==4.0.0
 langchain==0.1.0
 langchain-openai==0.0.5
 langchain-community==0.0.12
